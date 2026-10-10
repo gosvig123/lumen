@@ -4,9 +4,11 @@ use std::time::SystemTime;
 use tree_sitter::{Parser, Tree};
 
 use crate::command::diff::context::get_language_context;
-use crate::command::diff::diff_algo::{compute_side_by_side, count_added_removed, find_hunk_starts};
+use crate::command::diff::diff_algo::{compute_side_by_side, find_hunk_starts};
 use crate::command::diff::highlight::FileHighlighter;
-
+use crate::command::diff::line_stats::{
+    compute_file_line_stats, total_line_stats, FileLineStats,
+};
 use crate::command::diff::search::SearchState;
 use crate::command::diff::types::{
     build_file_tree, CursorPosition, DiffFullscreen, DiffLine, DiffPanelFocus,
@@ -223,24 +225,12 @@ pub struct AppState {
     /// Set by render_diff each frame; used by mouse handlers to detect clicks
     /// outside the editor (save if non-empty, cancel if empty).
     pub editor_rect: Option<ratatui::layout::Rect>,
+    /// Per-file line counts, indexed like `file_diffs`. Recomputed on reload.
+    pub file_line_stats: Vec<FileLineStats>,
     /// Total added lines across all files in the current diff. Recomputed on reload.
     pub total_added: usize,
     /// Total removed lines across all files in the current diff. Recomputed on reload.
     pub total_removed: usize,
-}
-
-fn compute_total_line_stats(file_diffs: &[FileDiff]) -> (usize, usize) {
-    let mut added = 0usize;
-    let mut removed = 0usize;
-    for diff in file_diffs {
-        if diff.is_binary {
-            continue;
-        }
-        let (a, r) = count_added_removed(&diff.old_content, &diff.new_content);
-        added += a;
-        removed += r;
-    }
-    (added, removed)
 }
 
 impl AppState {
@@ -268,7 +258,8 @@ impl AppState {
             Self::find_first_file(&sidebar_items, &sidebar_visible)
         };
         let settings = DiffViewSettings::default();
-        let (total_added, total_removed) = compute_total_line_stats(&file_diffs);
+        let file_line_stats = compute_file_line_stats(&file_diffs);
+        let (total_added, total_removed) = total_line_stats(&file_line_stats);
         let (scroll, focused_hunk) = if !file_diffs.is_empty() && current_file < file_diffs.len() {
             let diff = &file_diffs[current_file];
             let side_by_side =
@@ -328,6 +319,7 @@ impl AppState {
             annotation_overlay_gaps: Vec::new(),
             annotation_rects: Vec::new(),
             editor_rect: None,
+            file_line_stats,
             total_added,
             total_removed,
         }
@@ -802,9 +794,8 @@ impl AppState {
         }
 
         self.file_diffs = file_diffs;
-        let (total_added, total_removed) = compute_total_line_stats(&self.file_diffs);
-        self.total_added = total_added;
-        self.total_removed = total_removed;
+        self.file_line_stats = compute_file_line_stats(&self.file_diffs);
+        (self.total_added, self.total_removed) = total_line_stats(&self.file_line_stats);
         self.sidebar_items = build_file_tree(&self.file_diffs);
 
         // Retain annotations whose file still exists
@@ -1077,5 +1068,20 @@ mod tests {
 
         assert_eq!(state.current_file, 0);
         assert!(state.file_diffs.is_empty());
+    }
+
+    #[test]
+    fn reload_recomputes_file_line_stats() {
+        let mut state = AppState::new(vec![make_file_diff("a.txt")], None);
+        let mut changed = make_file_diff("a.txt");
+        changed.old_content = "old\n".into();
+        changed.new_content = "new\nnext\n".into();
+        changed.status = FileStatus::Modified;
+
+        state.reload(vec![changed], None);
+
+        assert_eq!(state.file_line_stats[0].added, 2);
+        assert_eq!(state.file_line_stats[0].removed, 1);
+        assert_eq!((state.total_added, state.total_removed), (2, 1));
     }
 }

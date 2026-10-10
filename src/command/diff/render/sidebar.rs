@@ -5,6 +5,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
+use crate::command::diff::line_stats::{display_parts, FileLineStats, StatKind};
 use crate::command::diff::theme;
 use crate::command::diff::types::{FileStatus, SidebarItem};
 
@@ -20,6 +21,7 @@ pub fn render_sidebar(
     sidebar_scroll: usize,
     sidebar_h_scroll: u16,
     viewed_files: &HashSet<usize>,
+    file_line_stats: &[FileLineStats],
     is_focused: bool,
     total_files: usize,
     total_added: usize,
@@ -33,8 +35,8 @@ pub fn render_sidebar(
         .enumerate()
         .map(|(i, item_idx)| {
             let item = &sidebar_items[*item_idx];
-            let (prefix, status_symbol, status_color, name, is_current_file, is_viewed) = match item
-            {
+            let (prefix, status_symbol, status_color, name, is_current_file, is_viewed, stats) =
+                match item {
                 SidebarItem::Directory {
                     name, path, depth, ..
                 } => {
@@ -83,6 +85,7 @@ pub fn render_sidebar(
                         format!(" {}", name),
                         false,
                         all_children_viewed && has_children,
+                        Vec::new(),
                     )
                 }
                 SidebarItem::File {
@@ -108,10 +111,13 @@ pub fn render_sidebar(
                         format!(" {}", name),
                         *file_index == current_file,
                         viewed,
+                        file_line_stats
+                            .get(*file_index)
+                            .map(|stats| display_parts(*status, *stats))
+                            .unwrap_or_default(),
                     )
                 }
             };
-
             let is_selected = i == sidebar_selected;
             let base_style = if is_selected {
                 Style::default().fg(t.ui.selection_fg).bg(if is_focused {
@@ -126,7 +132,6 @@ pub fn render_sidebar(
             } else {
                 Style::default()
             };
-
             let status_style = if is_selected {
                 base_style
             } else if let Some(color) = status_color {
@@ -134,15 +139,23 @@ pub fn render_sidebar(
             } else {
                 base_style
             };
-
-            Line::from(vec![
+            let mut spans = vec![
                 Span::styled(prefix, base_style),
                 Span::styled(status_symbol, status_style),
                 Span::styled(name, base_style),
-            ])
+            ];
+            for (kind, text) in stats {
+                let color = match kind {
+                    StatKind::Added => t.ui.stats_added,
+                    StatKind::Removed => t.ui.stats_removed,
+                };
+                let style = if is_selected { base_style } else { base_style.fg(color) };
+                spans.push(Span::styled(" ", base_style));
+                spans.push(Span::styled(text, style));
+            }
+            Line::from(spans)
         })
         .collect();
-
     let title_style = if is_focused {
         Style::default().fg(t.ui.border_focused)
     } else {
@@ -150,7 +163,6 @@ pub fn render_sidebar(
     };
     let border_style = Style::default().fg(t.ui.border_unfocused);
     let muted_style = Style::default().fg(t.ui.text_muted);
-
     let title = Line::from(vec![
         Span::styled(" [1] Files ", title_style),
         Span::styled(format!("· {} ", total_files), muted_style),
@@ -165,18 +177,12 @@ pub fn render_sidebar(
         ),
         Span::raw(" "),
     ]);
-
     let visible_lines: Vec<Line> = lines
         .into_iter()
         .skip(sidebar_scroll)
         .take(visible_height)
         .collect();
-
-    // Drop the right border so the sidebar shares a single vertical line with
-    // the adjacent diff panel. The parent renderer fixes up the corner cells
-    // at the boundary so the joined borders use `┬` / `┴` junctions.
     let borders = Borders::TOP | Borders::LEFT | Borders::BOTTOM;
-
     let para = Paragraph::new(visible_lines)
         .style(Style::default().bg(bg))
         .scroll((0, sidebar_h_scroll))
@@ -187,6 +193,5 @@ pub fn render_sidebar(
                 .border_style(border_style)
                 .style(Style::default().bg(bg)),
         );
-
     frame.render_widget(para, area);
 }

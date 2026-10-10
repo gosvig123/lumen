@@ -7,6 +7,7 @@ use ratatui::{
 
 use crate::command::diff::context::{compute_context_lines, ContextLine};
 use crate::command::diff::highlight::{highlight_line_spans, FileHighlighter};
+use crate::command::diff::line_stats::FileLineStats;
 use crate::command::diff::search::{MatchPanel, SearchState};
 use crate::command::diff::state::{Annotation, AnnotationTarget};
 use crate::command::diff::theme;
@@ -1248,7 +1249,8 @@ fn render_overlay_slot(
 pub fn render_diff(
     frame: &mut Frame,
     diff: &FileDiff,
-    _file_diffs: &[FileDiff],
+    file_diffs: &[FileDiff],
+    file_line_stats: &[FileLineStats],
     trees: &TreeCache,
     sidebar_items: &[SidebarItem],
     sidebar_visible: &[usize],
@@ -1339,8 +1341,9 @@ pub fn render_diff(
             sidebar_scroll,
             sidebar_h_scroll,
             viewed_files,
+            file_line_stats,
             focused_panel == FocusedPanel::Sidebar,
-            _file_diffs.len(),
+            file_diffs.len(),
             total_added,
             total_removed,
         );

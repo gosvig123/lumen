@@ -41,6 +41,8 @@ use super::git::{
     get_current_branch, load_file_diffs, load_pr_file_diffs, load_single_commit_diffs,
 };
 use super::highlight;
+use super::line_stats::display_width;
+use super::pr_intent;
 use super::render::{
     render_diff, render_empty_state, truncate_path, FilePickerItem, KeyBind, KeyBindSection, Modal,
     ModalContent, ModalFileStatus, ModalResult,
@@ -56,6 +58,11 @@ use super::{
     fetch_viewed_files, mark_file_as_viewed_async, unmark_file_as_viewed_async, DiffOptions, PrInfo,
 };
 use spinoff::{spinners, Color, Spinner};
+
+fn pr_intent_modal(pr: &PrInfo) -> Modal {
+    let (title, message) = pr_intent::modal_content(pr);
+    Modal::info(title, message)
+}
 
 use crate::commit_reference::CommitReference;
 use crate::vcs::{StackedCommitInfo, VcsBackend};
@@ -175,28 +182,37 @@ fn clamp_h_scroll(state: &mut AppState, term_width: u16) {
     }
 }
 
-/// Largest sidebar horizontal scroll offset that keeps a file/directory entry
-/// in view. Computed from the longest visible label minus the sidebar's inner
-/// content width.
+fn sidebar_item_width(state: &AppState, item: &SidebarItem) -> usize {
+    match item {
+        SidebarItem::Directory { name, depth, .. } => depth * 2 + 4 + name.chars().count(),
+        SidebarItem::File {
+            name,
+            depth,
+            file_index,
+            status,
+            ..
+        } => {
+            let stats = state
+                .file_line_stats
+                .get(*file_index)
+                .map(|stats| display_width(*status, *stats))
+                .unwrap_or(0);
+            depth * 2 + 4 + name.chars().count() + stats
+        }
+    }
+}
+
 fn max_sidebar_h_scroll(state: &AppState, term_width: u16) -> u16 {
     if !state.show_sidebar {
         return 0;
     }
-    let sidebar_width = (term_width / 4).clamp(20, 35) as usize;
-    // Sidebar uses Borders::TOP | LEFT | BOTTOM (the right edge is shared
-    // with the diff panel's left border), so only the left border eats width.
-    let inner_width = sidebar_width.saturating_sub(1);
-
-    let mut max_label = 0usize;
-    for item in &state.sidebar_items {
-        let len = match item {
-            SidebarItem::Directory { name, depth, .. } => {
-                depth * 2 + 2 + 1 + 1 + name.chars().count()
-            }
-            SidebarItem::File { name, depth, .. } => depth * 2 + 2 + 1 + 1 + name.chars().count(),
-        };
-        max_label = max_label.max(len);
-    }
+    let inner_width = (term_width / 4).clamp(20, 35).saturating_sub(1) as usize;
+    let max_label = state
+        .sidebar_items
+        .iter()
+        .map(|item| sidebar_item_width(state, item))
+        .max()
+        .unwrap_or(0);
     max_label.saturating_sub(inner_width).min(u16::MAX as usize) as u16
 }
 
@@ -369,7 +385,7 @@ fn run_app_internal(
         (None, None)
     };
 
-    let mut active_modal: Option<Modal> = None;
+    let mut active_modal = pr_info.as_ref().map(pr_intent_modal);
     let mut annotation_editor: Option<AnnotationEditor> = None;
     let mut pending_watch_event: Option<WatchEvent> = None;
     let mut pending_events: VecDeque<Event> = VecDeque::new();
@@ -445,6 +461,7 @@ fn run_app_internal(
                     frame,
                     diff,
                     &state.file_diffs,
+                    &state.file_line_stats,
                     &state.cached_trees,
                     &state.sidebar_items,
                     &state.sidebar_visible,
@@ -1264,6 +1281,9 @@ fn run_app_internal(
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             break 'main
                         }
+                        KeyCode::Char('p') if pr_info.is_some() => {
+                            active_modal = pr_info.as_ref().map(pr_intent_modal);
+                        }
                         KeyCode::Char('1') => {
                             state.focused_panel = FocusedPanel::Sidebar;
                             state.show_sidebar = true;
@@ -2050,6 +2070,10 @@ fn run_app_internal(
                                             KeyBind {
                                                 key: "r",
                                                 description: "Refresh diff / PR",
+                                            },
+                                            KeyBind {
+                                                key: "p",
+                                                description: "Show PR intent (PR mode)",
                                             },
                                             KeyBind {
                                                 key: "y",
